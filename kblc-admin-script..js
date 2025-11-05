@@ -1,12 +1,14 @@
 jQuery(document).ready(function($) {
-    // --- NEW ---
-    // Initialize tabs
+    
     var $tabs = $("#kblc-tabs").tabs();
+    var $check_button = $("#kblc-check-links");
+    var $clear_button = $("#kblc-clear-results");
+    var $notice_box = $("#kblc-checking-notice");
+    var $notice_p = $notice_box.find('p');
 
     // DEBUGGING: This message MUST appear in your browser console if the new file is loading.
-    console.log('KBLC Admin Script v1.2.4 Loaded');
+    console.log('KBLC Admin Script v1.4.1 Loaded');
 
-    // --- NEW ---
     // Define storage keys
     var STORAGE_KEYS = {
         broken: 'kblc_results_broken',
@@ -15,7 +17,9 @@ jQuery(document).ready(function($) {
         batch: 'kblc_current_batch'
     };
 
-    // --- NEW ---
+    // --- Global queue for the current batch ---
+    var post_queue = [];
+
     // Function to load results from sessionStorage
     function loadResultsFromStorage() {
         var broken_html = sessionStorage.getItem(STORAGE_KEYS.broken) || '';
@@ -32,9 +36,8 @@ jQuery(document).ready(function($) {
     // Load results on page load
     loadResultsFromStorage();
 
-    // --- NEW ---
-    // Click handler for the "Clear Results" button
-    $("#kblc-clear-results").click(function() {
+    // --- Click handler for the "Clear Results" button ---
+    $clear_button.click(function() {
         if (confirm(kblc_ajax.clear_confirm)) {
             // Clear storage
             sessionStorage.removeItem(STORAGE_KEYS.broken);
@@ -44,108 +47,149 @@ jQuery(document).ready(function($) {
 
             // Clear HTML and reset batch
             loadResultsFromStorage();
-            $("#kblc-check-links").prop("disabled", false).text("Check Next Batch");
+            $check_button.prop("disabled", false).text("Check Next Batch");
+            $notice_box.hide();
             console.log('Results cleared.');
         }
     });
 
-    // Main "Check Links" button click handler
-    $("#kblc-check-links").click(function() {
+    // --- Main "Check Links" button click handler ---
+    $check_button.click(function() {
         
-        var $button = $(this);
         var batch_size = parseInt($("#kblc-batch-size").val());
         var current_batch = parseInt($("#kblc-current-batch").val());
-        
-        // --- NEW: Calculate batch range for display ---
-        var start_post = ((current_batch - 1) * batch_size) + 1;
-        var end_post = current_batch * batch_size;
 
-        // Disable button and show notice
-        $button.prop("disabled", true).text("Checking...");
-        
-        // --- NEW: Set dynamic text and show notice ---
-        var $notice_p = $("#kblc-checking-notice p");
-        $notice_p.text('Checking batch ' + current_batch + ' (posts ' + start_post + ' - ' + end_post + ')... Please wait.');
-        $("#kblc-checking-notice").show();
+        $check_button.prop("disabled", true).text("Fetching post list...");
+        $notice_p.text('Preparing batch ' + current_batch + '... Please wait.');
+        $notice_box.show();
 
+        // Step 1: Get the list of posts for this batch
         $.ajax({
             url: kblc_ajax.ajax_url,
             type: "post",
             data: {
-                action: "kblc_ajax_check_links",
+                action: "kblc_ajax_get_batch_posts",
                 nonce: kblc_ajax.nonce,
                 batch_size: batch_size,
                 batch: current_batch
             },
             success: function(response) {
-                console.log('AJAX Success Response:', response);
-
-                // Check for 'finished' signal
                 if (response.finished) {
-                    $("#kblc-checking-notice").hide(); // Hide notice
-                    $("#kblc-results-broken").prepend('<p><strong>' + kblc_ajax.no_more_posts + '</strong></p>');
-                    $button.prop("disabled", true).text("All Done");
-                    sessionStorage.removeItem(STORAGE_KEYS.batch); // Reset batch for next time
+                    // No posts were found in this batch, we are all done
+                    $notice_p.text(kblc_ajax.no_more_posts);
+                    $check_button.prop("disabled", true).text("All Done");
+                    sessionStorage.removeItem(STORAGE_KEYS.batch); // Reset batch
                     return;
                 }
 
                 if (response.success) {
+                    // We have our list of posts. Start the queue.
+                    post_queue = response.data;
+                    console.log('Got ' + post_queue.length + ' posts to scan.');
+                    // Start processing the first item in the queue
+                    process_post_queue(0, post_queue.length);
+                } else {
+                    $notice_p.text('Error: Could not retrieve post list.');
+                    $check_button.prop("disabled", false).text("Check Next Batch");
+                }
+            },
+            error: function() {
+                $notice_p.text(kblc_ajax.error_text + ' (Failed to get post list)');
+                $check_button.prop("disabled", false).text("Check Next Batch");
+            }
+        });
+    });
+
+    /**
+     * This is the new recursive loop function.
+     * It processes one post at a time from the queue.
+     */
+    function process_post_queue(index, total) {
+        
+        // Get the post for this iteration
+        var post = post_queue[index];
+
+        // Update the progress indicator
+        var progress_text = kblc_ajax.scan_text
+            .replace('{current}', index + 1)
+            .replace('{total}', total)
+            .replace('{title}', post.title);
+            
+        $notice_p.text(progress_text);
+        $check_button.text('Checking (' + (index + 1) + '/' + total + ')...');
+
+        // Step 2: Send an AJAX request to scan just this ONE post
+        $.ajax({
+            url: kblc_ajax.ajax_url,
+            type: "post",
+            data: {
+                action: "kblc_ajax_check_links", // The *other* AJAX function
+                nonce: kblc_ajax.nonce,
+                post_id: post.id
+            },
+            success: function(response) {
+                
+                if (response.success) {
                     var data = response.data;
-                    var has_results = false;
 
-                    // --- NEW: Append to correct tabs ---
-
+                    // Append results to the correct tabs
                     if (data.broken && data.broken.length > 0) {
-                        has_results = true;
                         var broken_html = sessionStorage.getItem(STORAGE_KEYS.broken) || '';
-                        broken_html = data.broken.join('') + broken_html; // Prepend new results
+                        broken_html = data.broken.join('') + broken_html;
                         $("#kblc-results-broken").html(broken_html);
                         sessionStorage.setItem(STORAGE_KEYS.broken, broken_html);
                     }
 
                     if (data.working && data.working.length > 0) {
-                        has_results = true;
                         var working_html = sessionStorage.getItem(STORAGE_KEYS.working) || '';
-                        working_html = data.working.join('') + working_html; // Prepend new results
+                        working_html = data.working.join('') + working_html;
                         $("#kblc-results-working").html(working_html);
                         sessionStorage.setItem(STORAGE_KEYS.working, working_html);
                     }
 
                     if (data.checked && data.checked.length > 0) {
                         var checked_html = sessionStorage.getItem(STORAGE_KEYS.checked) || '';
-                        checked_html = data.checked.join('') + checked_html; // Prepend new results
+                        checked_html = data.checked + checked_html; // Only one item
                         $("#kblc-results-checked").html(checked_html);
                         sessionStorage.setItem(STORAGE_KEYS.checked, checked_html);
                     }
-                    
-                    // Show a "no new issues" message if scan ran but found nothing
-                    if ( !has_results && data.checked.length > 0 ) {
-                         $("#kblc-results-broken").prepend('<p><em>' + kblc_ajax.checking_text.replace('{batch}', current_batch) + '</em></p>');
-                    }
 
-                    // Increment batch and re-enable button
-                    var next_batch = parseInt(current_batch) + 1;
+                } else {
+                    // The single post scan failed
+                    var fail_html = '<p style="border-left: 4px solid #dc3232; padding-left: 10px;"><strong>Scan failed for ' + post.title + ':</strong> ' + response.data + '</p><hr>';
+                    var broken_html = sessionStorage.getItem(STORAGE_KEYS.broken) || '';
+                    broken_html = fail_html + broken_html;
+                    $("#kblc-results-broken").html(broken_html);
+                    sessionStorage.setItem(STORAGE_KEYS.broken, broken_html);
+                }
+
+                // --- Process the next item ---
+                var next_index = index + 1;
+                if (next_index < total) {
+                    // Go to the next post in the queue
+                    process_post_queue(next_index, total);
+                } else {
+                    // This batch is finished!
+                    $notice_box.hide();
+                    $check_button.prop("disabled", false).text("Check Next Batch");
+                    
+                    // Increment and save the batch number
+                    var next_batch = parseInt($("#kblc-current-batch").val()) + 1;
                     $("#kblc-current-batch").val(next_batch);
                     sessionStorage.setItem(STORAGE_KEYS.batch, next_batch);
                     
-                    $button.prop("disabled", false).text("Check Next Batch");
-                    $("#kblc-checking-notice").hide(); // Hide notice
-
-                } else {
-                    // Handle a {success: false} response
-                    console.error('AJAX Error (Success: false):', response);
-                    $("#kblc-checking-notice").hide(); // Hide notice
-                    $("#kblc-results-broken").prepend('<p><strong>' + kblc_ajax.error_text + ' (Server-side error. Check console.)</strong></p>');
-                    $button.prop("disabled", false).text("Check Next Batch");
+                    $("#kblc-results-broken").prepend('<p><strong>Batch ' + (next_batch - 1) + ' complete.</strong></p>');
                 }
+
             },
-            error: function(xhr, status, error) {
-                // This handles a total failure (like a 500 error or network down)
-                console.error('AJAX Request Failed:', status, error, xhr.responseText);
-                $("#kblc-checking-notice").hide(); // Hide notice
-                $("#kblc-results-broken").prepend('<p><strong>' + kblc_ajax.error_text + ' (AJAX request failed. Check console.)</strong></p>');
-                $button.prop("disabled", false).text("Check Next Batch");
+            error: function(xhr) {
+                // The AJAX call itself failed (e.g., 500 error on the server)
+                // *** THIS WAS THE LINE WITH THE BUG ***
+                $notice_p.text('A fatal error occurred while scanning ' + post.title + '. Stopping scan.');
+                console.error('AJAX Request Failed:', xhr.responseText);
+                $check_button.prop("disabled", false).text("Check Next Batch");
             }
         });
-    });
+    }
+
 });
