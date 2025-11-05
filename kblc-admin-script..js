@@ -3,6 +3,9 @@ jQuery(document).ready(function($) {
     // Initialize tabs
     var $tabs = $("#kblc-tabs").tabs();
 
+    // DEBUGGING: This message MUST appear in your browser console if the new file is loading.
+    console.log('KBLC Admin Script v1.2.4 Loaded');
+
     // --- NEW ---
     // Define storage keys
     var STORAGE_KEYS = {
@@ -50,11 +53,19 @@ jQuery(document).ready(function($) {
     $("#kblc-check-links").click(function() {
         
         var $button = $(this);
-        var batch_size = $("#kblc-batch-size").val();
-        var current_batch = $("#kblc-current-batch").val();
+        var batch_size = parseInt($("#kblc-batch-size").val());
+        var current_batch = parseInt($("#kblc-current-batch").val());
         
+        // --- NEW: Calculate batch range for display ---
+        var start_post = ((current_batch - 1) * batch_size) + 1;
+        var end_post = current_batch * batch_size;
+
         // Disable button and show notice
         $button.prop("disabled", true).text("Checking...");
+        
+        // --- NEW: Set dynamic text and show notice ---
+        var $notice_p = $("#kblc-checking-notice p");
+        $notice_p.text('Checking batch ' + current_batch + ' (posts ' + start_post + ' - ' + end_post + ')... Please wait.');
         $("#kblc-checking-notice").show();
 
         $.ajax({
@@ -71,7 +82,7 @@ jQuery(document).ready(function($) {
 
                 // Check for 'finished' signal
                 if (response.finished) {
-                    $("#kblc-checking-notice").hide();
+                    $("#kblc-checking-notice").hide(); // Hide notice
                     $("#kblc-results-broken").prepend('<p><strong>' + kblc_ajax.no_more_posts + '</strong></p>');
                     $button.prop("disabled", true).text("All Done");
                     sessionStorage.removeItem(STORAGE_KEYS.batch); // Reset batch for next time
@@ -118,12 +129,12 @@ jQuery(document).ready(function($) {
                     sessionStorage.setItem(STORAGE_KEYS.batch, next_batch);
                     
                     $button.prop("disabled", false).text("Check Next Batch");
-                    $("#kblc-checking-notice").hide();
+                    $("#kblc-checking-notice").hide(); // Hide notice
 
                 } else {
                     // Handle a {success: false} response
                     console.error('AJAX Error (Success: false):', response);
-                    $("#kblc-checking-notice").hide();
+                    $("#kblc-checking-notice").hide(); // Hide notice
                     $("#kblc-results-broken").prepend('<p><strong>' + kblc_ajax.error_text + ' (Server-side error. Check console.)</strong></p>');
                     $button.prop("disabled", false).text("Check Next Batch");
                 }
@@ -131,7 +142,7 @@ jQuery(document).ready(function($) {
             error: function(xhr, status, error) {
                 // This handles a total failure (like a 500 error or network down)
                 console.error('AJAX Request Failed:', status, error, xhr.responseText);
-                $("#kblc-checking-notice").hide();
+                $("#kblc-checking-notice").hide(); // Hide notice
                 $("#kblc-results-broken").prepend('<p><strong>' + kblc_ajax.error_text + ' (AJAX request failed. Check console.)</strong></p>');
                 $button.prop("disabled", false).text("Check Next Batch");
             }
