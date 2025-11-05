@@ -1,75 +1,179 @@
 <?php
 /*
-Plugin Name: Broken Links Checker
-Description: Checks and lists & links on a website and provides functionality to check for broken links.
-Version: 1.0
-Author: D kandekore
+Plugin Name: Kandeshop Broken Links Checker
+Plugin URI: https://github.com/dkandekore
+Description: Checks posts and pages in batches to find and list broken external links.
+Version: 1.0.1
+Author: D Kandekore
+Author URI: https://github.com/dkandekore
+License: GPL-2.0-or-later
+License URI: https://www.gnu.org/licenses/gpl-2.0.html
+Text Domain: kandeshop-blc
 */
 
-// Add the admin menu
-add_action('admin_menu', 'elc_add_admin_menu');
-
-function elc_add_admin_menu() {
-    add_menu_page('Broken Links Checker', 'Broken Links Checker', 'manage_options', 'broken-links-checker', 'elc_display_admin_page', 'dashicons-admin-links');
+// Exit if accessed directly
+if ( ! defined( 'ABSPATH' ) ) {
+    exit;
 }
 
-function elc_display_admin_page() {
+/**
+ * Add the admin menu page.
+ */
+function kblc_add_admin_menu() {
+    add_menu_page(
+        esc_html__( 'Broken Links', 'kandeshop-blc' ),
+        esc_html__( 'Broken Links', 'kandeshop-blc' ),
+        'manage_options',
+        'kandeshop-broken-links',
+        'kblc_admin_page_html',
+        'dashicons-admin-links'
+    );
+}
+add_action( 'admin_menu', 'kblc_add_admin_menu' );
+
+/**
+ * Display the admin page HTML.
+ */
+function kblc_admin_page_html() {
     $default_batch_size = 20;
+    ?>
+    <div class="wrap">
+        <h1><?php esc_html_e( 'Kandeshop Broken Links Checker', 'kandeshop-blc' ); ?></h1>
+        <p><?php esc_html_e( 'Scan your posts and pages in batches to find broken external links.', 'kandeshop-blc' ); ?></p>
+        
+        <table class="form-table" role="presentation">
+            <tr>
+                <th scope="row">
+                    <label for="kblc-batch-size"><?php esc_html_e( 'Posts/Pages per batch', 'kandeshop-blc' ); ?></label>
+                </th>
+                <td>
+                    <input type="number" id="kblc-batch-size" value="<?php echo esc_attr( $default_batch_size ); ?>">
+                </td>
+            </tr>
+        </table>
 
-    echo '<h1>External Links Checker</h1>';
-    echo 'Number of posts/pages per batch: <input type="number" id="batch-size" value="' . $default_batch_size . '">';
-    echo '<input type="hidden" id="current-batch" value="1">';  // Hidden input to track the current batch
-    echo '<button id="check-broken-links">Check Next Batch</button>';
-    echo '<div id="checking-notice" style="color: blue; display: none;">Checking links...</div>'; 
-    echo '<div id="broken-links-result"></div>'; 
+        <input type="hidden" id="kblc-current-batch" value="1">
+        
+        <?php
+        // Add a Nonce field for security
+        wp_nonce_field( 'kblc_check_links_nonce', '_kblc_nonce' );
+        ?>
+        
+        <p>
+            <button id="kblc-check-links" class="button button-primary"><?php esc_html_e( 'Check Next Batch', 'kandeshop-blc' ); ?></button>
+        </p>
+        
+        <div id="kblc-checking-notice" style="color: blue; display: none; margin-top: 10px;">
+            <p><?php esc_html_e( 'Checking links, please wait...', 'kandeshop-blc' ); ?></p>
+        </div>
+        
+        <div id="kblc-results" style="margin-top: 20px;"></div>
+    </div>
+    <?php
 }
 
-
-// Enqueue the JavaScript
-add_action('admin_enqueue_scripts', 'elc_enqueue_scripts');
-
-function elc_enqueue_scripts($hook) {
-    if ('toplevel_page_broken-links-checker' !== $hook) {
+/**
+ * Enqueue and localize the admin script.
+ */
+function kblc_admin_enqueue_scripts( $hook ) {
+    // Only load on our plugin page
+    if ( 'toplevel_page_kandeshop-broken-links' !== $hook ) {
         return;
     }
-    wp_enqueue_script('jquery');
-    wp_enqueue_script('elc-script', plugins_url('elc-script.js', __FILE__), array('jquery'), '1.0', true);
+
+    $script_asset_path = plugins_url( 'kblc-admin-script.js', __FILE__ );
+    
+    wp_enqueue_script(
+        'kblc-admin-script',
+        $script_asset_path,
+        array( 'jquery' ),
+        '1.0.1', // Version
+        true // In footer
+    );
+
+    // Localize the script to pass the AJAX URL and Nonce
+    wp_localize_script(
+        'kblc-admin-script',
+        'kblc_ajax', // Object name in JavaScript
+        array(
+            'ajax_url' => admin_url( 'admin-ajax.php' ),
+            'nonce'    => wp_create_nonce( 'kblc_check_links_nonce' ),
+            'checking_text' => esc_html__( 'No broken links found in this batch. Checking next batch...', 'kandeshop-blc' ),
+            'no_more_posts' => esc_html__( 'All posts and pages have been checked.', 'kandeshop-blc' ),
+            'error_text'    => esc_html__( 'An error occurred while checking the links.', 'kandeshop-blc' )
+        )
+    );
 }
+add_action( 'admin_enqueue_scripts', 'kblc_admin_enqueue_scripts' );
 
 
-// AJAX action for checking links
-add_action('wp_ajax_check_broken_links', 'elc_check_broken_links');
+/**
+ * AJAX action for checking links.
+ */
+function kblc_ajax_check_links() {
+    // 1. Check the Nonce for security
+    check_ajax_referer( 'kblc_check_links_nonce', 'nonce' );
 
-function elc_check_broken_links() {
-    $batch_size = isset($_POST['batch_size']) ? intval($_POST['batch_size']) : 20;
-    $batch_number = isset($_POST['batch']) ? intval($_POST['batch']) : 1;
-    $offset = ($batch_number - 1) * $batch_size;
+    // 2. Get and sanitize variables
+    $batch_size   = isset( $_POST['batch_size'] ) ? intval( $_POST['batch_size'] ) : 20;
+    $batch_number = isset( $_POST['batch'] ) ? intval( $_POST['batch'] ) : 1;
+    $offset       = ( $batch_number - 1 ) * $batch_size;
 
     $args = array(
-        'post_type' => array('post', 'page'),
+        'post_type'      => array( 'post', 'page' ),
         'posts_per_page' => $batch_size,
-        'offset' => $offset
+        'offset'         => $offset,
+        'post_status'    => 'publish', // Only check published posts
     );
-    $query = new WP_Query($args);
+    
+    $query = new WP_Query( $args );
     $broken_links_output = "";
+    $found_posts = false;
 
-    if ($query->have_posts()) {
-        while ($query->have_posts()) {
+    if ( $query->have_posts() ) {
+        $found_posts = true;
+        while ( $query->have_posts() ) {
             $query->the_post();
             $content = get_the_content();
 
-            preg_match_all('#<a[^>]+href=["\'](http[^"\']+)["\']#', $content, $matches);
+            // Regex Fix: Find https? (http AND https)
+            preg_match_all( '#<a[^>]+href=["\'](https?://[^"\']+)["\']#i', $content, $matches );
 
-            foreach ($matches[1] as $link) {
-                $response = wp_remote_get($link, array('timeout' => 5));
-                if (is_wp_error($response) || 404 == wp_remote_retrieve_response_code($response)) {
-                    $broken_links_output .= '<p><strong>Page:</strong> <a href="' . get_the_permalink() . '">' . get_the_title() . '</a> - <strong>Broken Link:</strong> ' . $link . '</p>';
+            if ( ! empty( $matches[1] ) ) {
+                foreach ( $matches[1] as $link ) {
+                    $response = wp_remote_get( esc_url_raw( $link ), array( 'timeout' => 5 ) );
+                    
+                    if ( is_wp_error( $response ) ) {
+                        // Handle WordPress-level errors (e.g., timeout, DNS failure)
+                        $broken_links_output .= '<p><strong>' . esc_html__( 'Page:', 'kandeshop-blc' ) . '</strong> <a href="' . esc_url( get_the_permalink() ) . '" target="_blank">' . esc_html( get_the_title() ) . '</a><br>';
+                        $broken_links_output .= '<strong>' . esc_html__( 'Broken Link:', 'kandeshop-blc' ) . '</strong> <a href="' . esc_url( $link ) . '" target="_blank">' . esc_html( $link ) . '</a><br>';
+                        $broken_links_output .= '<strong>' . esc_html__( 'Error:', 'kandeshop-blc' ) . '</strong> ' . esc_html( $response->get_error_message() ) . '</p><hr>';
+                    } else {
+                        // Check for HTTP error codes (400+)
+                        $response_code = wp_remote_retrieve_response_code( $response );
+                        if ( $response_code >= 400 ) {
+                            $broken_links_output .= '<p><strong>' . esc_html__( 'Page:', 'kandeshop-blc' ) . '</strong> <a href="' . esc_url( get_the_permalink() ) . '" target="_blank">' . esc_html( get_the_title() ) . '</a><br>';
+                            $broken_links_output .= '<strong>' . esc_html__( 'Broken Link:', 'kandeshop-blc' ) . '</strong> <a href="' . esc_url( $link ) . '" target="_blank">' . esc_html( $link ) . '</a><br>';
+                            $broken_links_output .= '<strong>' . esc_html__( 'Status Code:', 'kandeshop-blc' ) . '</strong> ' . esc_html( $response_code ) . '</p><hr>';
+                        }
+                    }
                 }
             }
         }
         wp_reset_postdata();
     }
 
-    echo $broken_links_output;
-    wp_die();
+    if ( ! $found_posts ) {
+        // Send a special code '0' if no more posts were found
+        wp_send_json( '0' );
+    } elseif ( empty( $broken_links_output ) ) {
+        // Send '1' if posts were found but no broken links
+         wp_send_json( '1' );
+    } else {
+        // Send the HTML of broken links
+        wp_send_json_success( $broken_links_output );
+    }
+    
+    wp_die(); // Required for all AJAX in WordPress
 }
+add_action( 'wp_ajax_kblc_ajax_check_links', 'kblc_ajax_check_links' );
